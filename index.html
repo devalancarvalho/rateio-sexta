@@ -18,7 +18,7 @@
       from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     /* ── ① CONFIGURAÇÃO DO FIREBASE ── */
-    const FIREBASE_CONFIG = {
+    const firebaseConfig = {
   apiKey: "AIzaSyCcFaB1ugiMWWCb5NHC0pqlVZyg39wB8Zs",
   authDomain: "rateio-de-sexta.firebaseapp.com",
   databaseURL: "https://rateio-de-sexta-default-rtdb.firebaseio.com",
@@ -56,7 +56,7 @@
        A partir daqui não é preciso editar nada
        ════════════════════════════════════════════════════════════════ */
 
-    const app = initializeApp(FIREBASE_CONFIG);
+    const app = initializeApp(firebaseConfig);
     const db  = getDatabase(app);
 
     /* chave = data da sexta-feira corrente / próxima */
