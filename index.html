@@ -6,6 +6,224 @@
   <title>🥟 Rateio da Sexta</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Righteous&family=Nunito:wght@400;600;700;900&display=swap" rel="stylesheet" />
+
+  <!-- ╔══════════════════════════════════════════════════════════════╗
+       ║  FIREBASE – preencha com os dados do seu projeto            ║
+       ║  Veja as instruções no final do arquivo                     ║
+       ╚══════════════════════════════════════════════════════════════╝ -->
+  <script type="module">
+    import { initializeApp }
+      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getDatabase, ref, onValue, update, set }
+      from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    /* ── ① CONFIGURAÇÃO DO FIREBASE ── */
+    const FIREBASE_CONFIG = {
+      apiKey:            "SUA_API_KEY",
+      authDomain:        "SEU_PROJETO.firebaseapp.com",
+      databaseURL:       "https://SEU_PROJETO-default-rtdb.firebaseio.com",
+      projectId:         "SEU_PROJETO_ID",
+      storageBucket:     "SEU_PROJETO.appspot.com",
+      messagingSenderId: "SEU_SENDER_ID",
+      appId:             "SEU_APP_ID"
+    };
+
+    /* ── ② LISTA DE PESSOAS  (edite aqui para adicionar / remover) ── */
+    const PEOPLE = [
+      "Ana",
+      "Bruno",
+      "Carol",
+      "Diego",
+      "Eduardo",
+    ];
+
+    /* ════════════════════════════════════════════════════════════════
+       A partir daqui não é preciso editar nada
+       ════════════════════════════════════════════════════════════════ */
+
+    const app = initializeApp(FIREBASE_CONFIG);
+    const db  = getDatabase(app);
+
+    /* chave = data da sexta-feira corrente / próxima */
+    function fridayKey() {
+      const d   = new Date();
+      const day = d.getDay();
+      const diff = day <= 5 ? (5 - day) : 6;
+      d.setDate(d.getDate() + diff);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    }
+    const WEEK_KEY  = fridayKey();
+    const selectRef = ref(db, `semanas/${WEEK_KEY}/selecionados`);
+    const histRef   = ref(db, `historico`);
+
+    let selected    = {};
+    let historyData = {};
+
+    /* ── RENDER ── */
+    function renderChips() {
+      const grid = document.getElementById("participantsGrid");
+      grid.innerHTML = "";
+      PEOPLE.forEach(name => {
+        const active = !!selected[safeName(name)];
+        const chip   = document.createElement("div");
+        chip.className = "participant-chip" + (active ? " active" : "");
+        chip.innerHTML = `
+          <div class="chip-check">✓</div>
+          <div class="chip-name">${escHtml(name)}</div>
+        `;
+        chip.addEventListener("click", () => togglePerson(name));
+        grid.appendChild(chip);
+      });
+      updateCounter();
+      calculate();
+    }
+
+    function updateCounter() {
+      const count = PEOPLE.filter(n => !!selected[safeName(n)]).length;
+      document.getElementById("counterPill").textContent = count;
+    }
+
+    function calculate() {
+      const total = parseFloat(document.getElementById("totalValue").value) || 0;
+      const count = PEOPLE.filter(n => !!selected[safeName(n)]).length;
+      const rv    = document.getElementById("resultValue");
+      const rs    = document.getElementById("resultSub");
+      if (count === 0 || total === 0) {
+        rv.className  = "result-value result-empty";
+        rv.textContent = "—";
+        rs.textContent = count === 0 ? "Nenhum participante confirmado" : "Informe o valor total";
+        return;
+      }
+      const pp = Math.ceil((total / count) * 100) / 100;
+      rv.className  = "result-value";
+      rv.textContent = `R$ ${pp.toFixed(2).replace(".", ",")}`;
+      rs.textContent  = `Total R$ ${total.toFixed(2).replace(".", ",")} ÷ ${count} pessoa(s)`;
+    }
+
+    function renderHistory() {
+      const list    = document.getElementById("historyList");
+      const entries = Object.values(historyData).sort((a,b) => b.ts - a.ts).slice(0,12);
+      if (!entries.length) {
+        list.innerHTML = '<div class="empty-state"><span class="big">📭</span>Nenhum rateio salvo ainda</div>';
+        return;
+      }
+      list.innerHTML = entries.map(h => `
+        <div class="history-item">
+          <div class="hist-date">📅 ${h.date}</div>
+          <div class="hist-people" title="${escHtml(h.people.join(", "))}">
+            ${h.people.slice(0,3).map(escHtml).join(", ")}${h.people.length > 3 ? ` +${h.people.length-3}` : ""}
+          </div>
+          <div class="hist-valor">
+            R$ ${h.perPerson.toFixed(2).replace(".",",")}
+            <span style="color:#bba890;font-size:.8rem;font-weight:600">/ pessoa</span>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    /* ── ACTIONS (expostos globalmente para onclick no HTML) ── */
+    function togglePerson(name) {
+      const key  = safeName(name);
+      const next = !selected[key];
+      update(selectRef, { [key]: next });
+    }
+
+    window.addPersonTemp = function() {
+      const inp  = document.getElementById("newName");
+      const name = inp.value.trim();
+      if (!name) { inp.focus(); return; }
+      if (PEOPLE.includes(name)) { showToast("⚠️ Pessoa já está na lista!"); return; }
+      PEOPLE.push(name);
+      inp.value = "";
+      renderChips();
+      showToast(`✅ "${name}" adicionado(a)!`);
+      inp.focus();
+    };
+
+    window.salvarRateio = function() {
+      const total  = parseFloat(document.getElementById("totalValue").value) || 0;
+      const active = PEOPLE.filter(n => !!selected[safeName(n)]);
+      if (!active.length) { showToast("⚠️ Confirme pelo menos um participante!"); return; }
+      if (total <= 0)     { showToast("⚠️ Informe o valor total do pedido!");    return; }
+      const pp  = Math.ceil((total / active.length) * 100) / 100;
+      const key = `r_${Date.now()}`;
+      set(ref(db, `historico/${key}`), {
+        date: new Date().toLocaleDateString("pt-BR"),
+        people: active,
+        total,
+        perPerson: pp,
+        ts: Date.now(),
+      });
+      showToast("✅ Rateio salvo no histórico!");
+    };
+
+    window.resetSemana = function() {
+      if (!confirm("Limpar todas as seleções da semana?")) return;
+      set(selectRef, {});
+      document.getElementById("totalValue").value = "";
+      calculate();
+    };
+
+    /* ── LISTENERS FIREBASE (tempo real) ── */
+    onValue(selectRef, snap => {
+      selected = snap.val() || {};
+      renderChips();
+    });
+
+    onValue(histRef, snap => {
+      historyData = snap.val() || {};
+      renderHistory();
+    });
+
+    /* ── UTILS ── */
+    function safeName(n) { return n.replace(/[.#$/[\]\s]/g, "_"); }
+    function escHtml(s)  {
+      return String(s).replace(/[&<>"']/g,
+        c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+    function showToast(msg) {
+      const t = document.createElement("div");
+      t.textContent = msg;
+      Object.assign(t.style, {
+        position:"fixed", bottom:"28px", left:"50%", transform:"translateX(-50%)",
+        background:"#2d6a4f", color:"#fff", padding:"12px 24px",
+        borderRadius:"14px", fontFamily:"'Nunito',sans-serif",
+        fontWeight:"700", fontSize:"1rem", boxShadow:"0 6px 24px rgba(0,0,0,.2)",
+        zIndex:"9999", transition:"opacity .4s", whiteSpace:"nowrap"
+      });
+      document.body.appendChild(t);
+      setTimeout(() => { t.style.opacity = "0"; setTimeout(() => t.remove(), 400); }, 2400);
+    }
+
+    /* ── INIT ── */
+    document.addEventListener("DOMContentLoaded", () => {
+      /* data badge */
+      const d = new Date();
+      document.getElementById("dateBadge").innerHTML = `
+        <div>${d.toLocaleDateString("pt-BR",{weekday:"long"})}</div>
+        <div style="font-size:1.1rem">${d.toLocaleDateString("pt-BR",{day:"2-digit",month:"short",year:"numeric"})}</div>
+      `;
+      document.getElementById("weekLabel").textContent =
+        `Sexta ${WEEK_KEY.split("-").reverse().slice(0,2).join("/")}`;
+
+      /* status de conexão */
+      onValue(ref(db, ".info/connected"), snap => {
+        const ok = snap.val();
+        const el = document.getElementById("connStatus");
+        el.textContent = ok ? "🟢 Conectado" : "🔴 Sem conexão";
+        el.style.color = ok ? "#2d6a4f" : "#c1121f";
+      });
+
+      renderChips();
+      renderHistory();
+
+      document.getElementById("newName")
+        .addEventListener("keydown", e => { if (e.key === "Enter") window.addPersonTemp(); });
+      document.getElementById("totalValue")
+        .addEventListener("input", calculate);
+    });
+  </script>
+
   <style>
     :root {
       --bg: #fdf6e3;
@@ -18,13 +236,10 @@
       --green: #2d6a4f;
       --green-light: #d8f3dc;
       --red: #c1121f;
-      --red-light: #ffe8e8;
       --card-shadow: 0 4px 24px rgba(26,18,7,.10);
       --radius: 18px;
     }
-
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       font-family: 'Nunito', sans-serif;
       background: var(--bg);
@@ -35,24 +250,18 @@
         radial-gradient(circle at 90% 80%, rgba(232,93,4,.10) 0%, transparent 40%);
     }
 
-    /* ── HEADER ── */
+    /* HEADER */
     header {
       background: var(--accent);
       padding: 0 24px;
-      display: flex;
-      align-items: center;
-      gap: 16px;
+      display: flex; align-items: center; gap: 16px;
       box-shadow: 0 4px 20px rgba(232,93,4,.35);
-      position: relative;
-      overflow: hidden;
+      position: relative; overflow: hidden;
     }
     header::after {
-      content: '';
-      position: absolute;
-      right: -40px; top: -40px;
+      content: ''; position: absolute; right: -40px; top: -40px;
       width: 180px; height: 180px;
-      background: rgba(255,255,255,.08);
-      border-radius: 50%;
+      background: rgba(255,255,255,.08); border-radius: 50%;
     }
     .header-emoji {
       font-size: 3.2rem;
@@ -60,83 +269,50 @@
       animation: bounce 2.4s ease-in-out infinite;
       padding: 18px 0;
     }
-    @keyframes bounce {
-      0%,100%{transform:translateY(0)}
-      50%{transform:translateY(-8px)}
-    }
+    @keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
     .header-text h1 {
       font-family: 'Righteous', cursive;
       font-size: clamp(1.6rem, 4vw, 2.4rem);
-      color: #fff;
-      letter-spacing: .5px;
-      line-height: 1.1;
+      color: #fff; letter-spacing: .5px; line-height: 1.1;
     }
-    .header-text p {
-      color: rgba(255,255,255,.82);
-      font-size: .95rem;
-      font-weight: 600;
-    }
+    .header-text p { color: rgba(255,255,255,.82); font-size: .95rem; font-weight: 600; }
     .date-badge {
       margin-left: auto;
-      background: rgba(255,255,255,.18);
-      border: 2px solid rgba(255,255,255,.3);
-      color: #fff;
-      border-radius: 12px;
-      padding: 8px 16px;
-      font-weight: 700;
-      font-size: .9rem;
-      text-align: center;
-      line-height: 1.4;
-      backdrop-filter: blur(4px);
-      z-index: 1;
+      background: rgba(255,255,255,.18); border: 2px solid rgba(255,255,255,.3);
+      color: #fff; border-radius: 12px; padding: 8px 16px;
+      font-weight: 700; font-size: .9rem; text-align: center;
+      line-height: 1.4; backdrop-filter: blur(4px); z-index: 1;
     }
 
-    /* ── LAYOUT ── */
-    main {
-      max-width: 820px;
-      margin: 0 auto;
-      padding: 28px 16px 60px;
-      display: grid;
-      gap: 24px;
-    }
+    /* LAYOUT */
+    main { max-width: 820px; margin: 0 auto; padding: 28px 16px 60px; display: grid; gap: 24px; }
 
-    /* ── CARDS ── */
+    /* CARD */
     .card {
-      background: var(--paper);
-      border-radius: var(--radius);
-      box-shadow: var(--card-shadow);
-      border: 1.5px solid rgba(232,93,4,.12);
-      overflow: hidden;
+      background: var(--paper); border-radius: var(--radius);
+      box-shadow: var(--card-shadow); border: 1.5px solid rgba(232,93,4,.12); overflow: hidden;
     }
     .card-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      display: flex; align-items: center; gap: 10px;
       padding: 16px 22px;
       background: linear-gradient(135deg, #fff8ee 0%, #fff3e0 100%);
       border-bottom: 1.5px solid rgba(232,93,4,.12);
     }
-    .card-header h2 {
-      font-family: 'Righteous', cursive;
-      font-size: 1.15rem;
-      color: var(--accent);
-    }
+    .card-header h2 { font-family: 'Righteous', cursive; font-size: 1.15rem; color: var(--accent); }
     .card-header .icon { font-size: 1.4rem; }
+    .week-label {
+      margin-left: auto; font-size: .8rem; font-weight: 700;
+      color: var(--muted); background: #f5ede0; padding: 4px 10px; border-radius: 8px;
+    }
     .card-body { padding: 22px; }
 
-    /* ── PARTICIPANTS ── */
-    .participants-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 12px;
-    }
+    /* CHIPS */
+    .participants-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
     .participant-chip {
       position: relative;
-      border-radius: 14px;
-      border: 2.5px solid #e8d5b0;
-      background: #fff;
-      padding: 12px 14px;
-      cursor: pointer;
+      border-radius: 14px; border: 2.5px solid #e8d5b0;
+      background: #fff; padding: 16px 14px 14px;
+      cursor: pointer; text-align: center;
       transition: all .22s cubic-bezier(.34,1.56,.64,1);
       user-select: none;
     }
@@ -144,281 +320,91 @@
     .participant-chip.active {
       border-color: var(--accent2);
       background: linear-gradient(135deg, #fff8ee, #fff3dc);
-      box-shadow: 0 4px 16px rgba(244,140,6,.2);
+      box-shadow: 0 4px 16px rgba(244,140,6,.22);
     }
     .participant-chip.active .chip-check { opacity: 1; transform: scale(1); }
-    .chip-name {
-      font-weight: 700;
-      font-size: 1rem;
-      color: var(--dark);
-    }
-    .chip-badge {
-      font-size: .7rem;
-      font-weight: 700;
-      color: var(--muted);
-      margin-top: 2px;
-      text-transform: uppercase;
-      letter-spacing: .5px;
-    }
-    .chip-badge.fixed { color: var(--accent); }
+    .chip-name { font-weight: 800; font-size: 1rem; color: var(--dark); }
     .chip-check {
-      position: absolute;
-      top: 8px; right: 8px;
+      position: absolute; top: 7px; right: 7px;
       width: 22px; height: 22px;
-      background: var(--accent2);
-      border-radius: 50%;
+      background: var(--accent2); border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
-      color: #fff;
-      font-size: .8rem;
-      opacity: 0;
-      transform: scale(.4);
+      color: #fff; font-size: .8rem;
+      opacity: 0; transform: scale(.4);
       transition: all .2s cubic-bezier(.34,1.56,.64,1);
     }
-    .chip-remove {
-      position: absolute;
-      bottom: 7px; right: 8px;
-      background: none; border: none;
-      color: #ccc; cursor: pointer;
-      font-size: .85rem;
-      padding: 2px 4px;
-      border-radius: 6px;
-      transition: color .15s, background .15s;
-      display: none;
-    }
-    .participant-chip:hover .chip-remove { display: block; }
-    .chip-remove:hover { color: var(--red); background: var(--red-light); }
 
-    /* ADD PERSON */
-    .add-person-row {
-      display: flex;
-      gap: 10px;
-      margin-top: 16px;
-      flex-wrap: wrap;
-    }
+    /* ADD */
+    .divider { display: flex; align-items: center; gap: 12px; color: #c2a882; font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: 1px; }
+    .divider::before,.divider::after { content: ''; flex: 1; height: 1.5px; background: #ede3d2; }
+    .add-person-row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
     .input-field {
-      flex: 1;
-      min-width: 140px;
-      padding: 10px 16px;
-      border: 2px solid #e8d5b0;
-      border-radius: 12px;
-      font-family: 'Nunito', sans-serif;
-      font-size: .95rem;
-      font-weight: 600;
-      color: var(--dark);
-      background: #fff;
-      outline: none;
+      flex: 1; min-width: 140px; padding: 10px 16px;
+      border: 2px solid #e8d5b0; border-radius: 12px;
+      font-family: 'Nunito', sans-serif; font-size: .95rem; font-weight: 600;
+      color: var(--dark); background: #fff; outline: none;
       transition: border-color .18s, box-shadow .18s;
     }
     .input-field:focus { border-color: var(--accent2); box-shadow: 0 0 0 3px rgba(244,140,6,.15); }
-    .toggle-fixed {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: .85rem;
-      font-weight: 700;
-      color: var(--muted);
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .toggle-fixed input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
     .btn {
-      padding: 10px 20px;
-      border: none;
-      border-radius: 12px;
-      font-family: 'Nunito', sans-serif;
-      font-size: .95rem;
-      font-weight: 800;
-      cursor: pointer;
-      transition: all .18s;
-      display: flex; align-items: center; gap: 6px;
+      padding: 10px 20px; border: none; border-radius: 12px;
+      font-family: 'Nunito', sans-serif; font-size: .95rem; font-weight: 800;
+      cursor: pointer; transition: all .18s; display: flex; align-items: center; gap: 6px;
     }
-    .btn-primary {
-      background: var(--accent);
-      color: #fff;
-      box-shadow: 0 3px 12px rgba(232,93,4,.3);
-    }
-    .btn-primary:hover { background: #c94e02; transform: translateY(-1px); box-shadow: 0 5px 16px rgba(232,93,4,.4); }
-    .btn-primary:active { transform: translateY(0); }
-    .btn-secondary {
-      background: #f5ede0;
-      color: var(--accent);
-      border: 2px solid #e8d5b0;
-    }
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 3px 12px rgba(232,93,4,.3); }
+    .btn-primary:hover { background: #c94e02; transform: translateY(-1px); }
+    .btn-secondary { background: #f5ede0; color: var(--accent); border: 2px solid #e8d5b0; }
     .btn-secondary:hover { background: #ffe8d0; }
-    .btn-danger {
-      background: var(--red-light);
-      color: var(--red);
-      border: 2px solid #f7c5c8;
-    }
-    .btn-danger:hover { background: #ffd0d0; }
 
-    /* ── COUNTER BAR ── */
+    /* COUNTER */
     .counter-bar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
+      display: flex; align-items: center; gap: 12px;
       padding: 12px 22px;
       background: linear-gradient(90deg, var(--green-light) 0%, #ebf8ee 100%);
       border-top: 1.5px solid rgba(45,106,79,.15);
-      font-weight: 700;
-      font-size: .9rem;
-      color: var(--green);
+      font-weight: 700; font-size: .9rem; color: var(--green);
     }
     .counter-pill {
-      background: var(--green);
-      color: #fff;
-      border-radius: 20px;
-      padding: 3px 12px;
-      font-size: .95rem;
-      font-family: 'Righteous', cursive;
+      background: var(--green); color: #fff; border-radius: 20px;
+      padding: 3px 12px; font-size: .95rem; font-family: 'Righteous', cursive;
     }
+    #connStatus { margin-left: auto; font-size: .8rem; font-weight: 700; }
 
-    /* ── VALOR TOTAL ── */
-    .value-section {
-      display: flex;
-      align-items: flex-end;
-      gap: 14px;
-      flex-wrap: wrap;
-    }
+    /* VALUE */
+    .value-section { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
     .value-group { flex: 1; min-width: 180px; }
-    .value-label {
-      display: block;
-      font-weight: 700;
-      font-size: .88rem;
-      color: var(--muted);
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: .5px;
-    }
-    .currency-wrap {
-      position: relative;
-      display: flex;
-      align-items: center;
-    }
-    .currency-symbol {
-      position: absolute;
-      left: 14px;
-      font-weight: 900;
-      font-size: 1.05rem;
-      color: var(--accent2);
-    }
-    .currency-input {
-      padding-left: 40px !important;
-      font-size: 1.3rem !important;
-      font-weight: 900 !important;
-      width: 100%;
-    }
+    .value-label { display: block; font-weight: 700; font-size: .88rem; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+    .currency-wrap { position: relative; display: flex; align-items: center; }
+    .currency-symbol { position: absolute; left: 14px; font-weight: 900; font-size: 1.05rem; color: var(--accent2); }
+    .currency-input { padding-left: 40px !important; font-size: 1.3rem !important; font-weight: 900 !important; width: 100%; }
 
-    /* ── RESULTADO ── */
+    /* RESULT */
     .result-box {
       background: linear-gradient(135deg, #fff8ee 0%, #fff3dc 60%, #fef5e7 100%);
-      border: 2.5px solid var(--accent2);
-      border-radius: var(--radius);
-      padding: 28px 24px;
-      text-align: center;
-      position: relative;
-      overflow: hidden;
+      border: 2.5px solid var(--accent2); border-radius: var(--radius);
+      padding: 28px 24px; text-align: center; position: relative; overflow: hidden;
     }
-    .result-box::before {
-      content: '💰';
-      position: absolute;
-      font-size: 8rem;
-      opacity: .06;
-      right: -10px; top: -10px;
-      transform: rotate(15deg);
-    }
-    .result-label {
-      font-size: .9rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    .result-value {
-      font-family: 'Righteous', cursive;
-      font-size: clamp(2.5rem, 8vw, 4rem);
-      color: var(--accent);
-      line-height: 1;
-      text-shadow: 2px 3px 0 rgba(232,93,4,.15);
-      transition: all .3s cubic-bezier(.34,1.56,.64,1);
-    }
-    .result-sub {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: .95rem;
-      font-weight: 600;
-    }
-    .result-empty {
-      color: #bba890;
-      font-style: italic;
-    }
+    .result-box::before { content: '💰'; position: absolute; font-size: 8rem; opacity: .06; right: -10px; top: -10px; transform: rotate(15deg); }
+    .result-label { font-size: .9rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
+    .result-value { font-family: 'Righteous', cursive; font-size: clamp(2.5rem, 8vw, 4rem); color: var(--accent); line-height: 1; text-shadow: 2px 3px 0 rgba(232,93,4,.15); transition: all .3s; }
+    .result-sub { margin-top: 8px; color: var(--muted); font-size: .95rem; font-weight: 600; }
+    .result-empty { color: #bba890; }
 
-    /* ── HISTÓRICO ── */
-    .history-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
+    /* HISTORY */
+    .history-list { display: flex; flex-direction: column; gap: 10px; }
     .history-item {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 12px 16px;
-      background: #fff;
-      border-radius: 12px;
-      border: 1.5px solid #ede3d2;
-      animation: fadeIn .35s ease;
+      display: flex; align-items: center; gap: 14px;
+      padding: 12px 16px; background: #fff; border-radius: 12px;
+      border: 1.5px solid #ede3d2; animation: fadeIn .35s ease;
     }
     @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
-    .hist-date {
-      font-weight: 700;
-      font-size: .85rem;
-      color: var(--accent);
-      min-width: 78px;
-      white-space: nowrap;
-    }
-    .hist-people {
-      flex: 1;
-      font-size: .88rem;
-      color: var(--muted);
-      font-weight: 600;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+    .hist-date { font-weight: 700; font-size: .85rem; color: var(--accent); min-width: 78px; white-space: nowrap; }
+    .hist-people { flex: 1; font-size: .88rem; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .hist-valor { font-weight: 900; font-size: .95rem; color: var(--dark); white-space: nowrap; }
-    .hist-delete { background: none; border: none; color: #ccc; cursor: pointer; font-size: 1.1rem; padding: 4px; border-radius: 6px; transition: color .15s; }
-    .hist-delete:hover { color: var(--red); }
-
-    .empty-state {
-      text-align: center;
-      padding: 28px;
-      color: #c2a882;
-      font-style: italic;
-      font-weight: 600;
-    }
+    .empty-state { text-align: center; padding: 28px; color: #c2a882; font-style: italic; font-weight: 600; }
     .empty-state .big { font-size: 3rem; display: block; margin-bottom: 8px; }
+    .note { display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px; background: #fff9ec; border-left: 4px solid var(--accent3); border-radius: 8px; font-size: .88rem; color: var(--muted); font-weight: 600; }
 
-    /* ── DIVIDER ── */
-    .divider { display: flex; align-items: center; gap: 12px; color: #c2a882; font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: 1px; }
-    .divider::before,.divider::after { content: ''; flex: 1; height: 1.5px; background: #ede3d2; }
-
-    /* ── SNACK NOTES ── */
-    .note {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 12px 16px;
-      background: #fff9ec;
-      border-left: 4px solid var(--accent3);
-      border-radius: 8px;
-      font-size: .88rem;
-      color: var(--muted);
-      font-weight: 600;
-    }
-
-    /* ── RESPONSIVE ── */
     @media(max-width:480px){
       .participants-grid { grid-template-columns: repeat(2,1fr); }
       .date-badge { display: none; }
@@ -439,39 +425,37 @@
 
 <main>
 
-  <!-- ── PARTICIPANTES ── -->
+  <!-- PARTICIPANTES -->
   <div class="card">
     <div class="card-header">
       <span class="icon">👥</span>
       <h2>Participantes</h2>
+      <span class="week-label" id="weekLabel"></span>
     </div>
     <div class="card-body">
-      <div class="participants-grid" id="participantsGrid"></div>
+      <div class="participants-grid" id="participantsGrid">
+        <div style="color:#bba890;font-style:italic;padding:12px">Conectando…</div>
+      </div>
 
       <div style="margin-top:20px;">
-        <div class="divider">Adicionar pessoa</div>
-        <div class="add-person-row" style="margin-top:14px;">
+        <div class="divider">Adicionar pessoa temporariamente</div>
+        <div class="add-person-row">
           <input class="input-field" id="newName" placeholder="Nome da pessoa…" maxlength="24" />
-          <label class="toggle-fixed">
-            <input type="checkbox" id="newFixed" />
-            Fixo
-          </label>
-          <button class="btn btn-primary" onclick="addPerson()">
-            <span>＋</span> Adicionar
-          </button>
+          <button class="btn btn-primary" onclick="addPersonTemp()">＋ Adicionar</button>
         </div>
+        <p style="font-size:.78rem;color:#bba890;margin-top:8px;font-style:italic">
+          ⚠️ Válido só nesta sessão. Para salvar permanentemente, edite o array <code>PEOPLE</code> no HTML.
+        </p>
       </div>
     </div>
     <div class="counter-bar">
       <span class="counter-pill" id="counterPill">0</span>
-      participante(s) confirmado(s) hoje
-      <span style="margin-left:auto;font-size:.8rem;color:#3a8a60">
-        <span id="fixedCount">0</span> fixo(s) · <span id="varCount">0</span> variável(is)
-      </span>
+      confirmado(s) esta sexta
+      <span id="connStatus" style="font-size:.8rem;font-weight:700;color:#999">⏳</span>
     </div>
   </div>
 
-  <!-- ── VALOR ── -->
+  <!-- VALOR -->
   <div class="card">
     <div class="card-header">
       <span class="icon">🧾</span>
@@ -483,19 +467,15 @@
           <span class="value-label">Valor total do pedido</span>
           <div class="currency-wrap">
             <span class="currency-symbol">R$</span>
-            <input class="input-field currency-input" id="totalValue" type="number" min="0" step="0.01" placeholder="0,00" oninput="calculate()" />
+            <input class="input-field currency-input" id="totalValue" type="number" min="0" step="0.01" placeholder="0,00" />
           </div>
         </div>
-        <button class="btn btn-primary" style="padding:14px 28px;font-size:1.05rem" onclick="salvarRateio()">
-          ✅ Salvar rateio
-        </button>
-        <button class="btn btn-secondary" onclick="resetSemana()">
-          🔄 Nova semana
-        </button>
+        <button class="btn btn-primary" style="padding:14px 28px;font-size:1.05rem" onclick="salvarRateio()">✅ Salvar rateio</button>
+        <button class="btn btn-secondary" onclick="resetSemana()">🔄 Limpar semana</button>
       </div>
 
       <div style="margin-top:22px;">
-        <div id="resultBox" class="result-box">
+        <div class="result-box">
           <div class="result-label">Cada um paga</div>
           <div class="result-value result-empty" id="resultValue">—</div>
           <div class="result-sub" id="resultSub"></div>
@@ -503,229 +483,52 @@
       </div>
 
       <div class="note" style="margin-top:16px;">
-        💡 O valor é dividido <strong>igualmente</strong> entre todos os confirmados. Frações são arredondadas para cima.
+        💡 Valor dividido <strong>igualmente</strong> entre os confirmados. Frações arredondadas para cima.
       </div>
     </div>
   </div>
 
-  <!-- ── HISTÓRICO ── -->
+  <!-- HISTÓRICO -->
   <div class="card">
     <div class="card-header">
       <span class="icon">📋</span>
       <h2>Histórico de Sextas</h2>
     </div>
     <div class="card-body">
-      <div class="history-list" id="historyList"></div>
+      <div class="history-list" id="historyList">
+        <div class="empty-state"><span class="big">📭</span>Nenhum rateio salvo ainda</div>
+      </div>
     </div>
   </div>
 
 </main>
 
-<script>
-  /* ─── STATE ─── */
-  const STORAGE_KEY = 'rateio_sexta_v2';
+<!--
+╔═══════════════════════════════════════════════════════════════════════╗
+║  INSTRUÇÕES – CONFIGURAR O FIREBASE (gratuito, ~5 min)               ║
+╠═══════════════════════════════════════════════════════════════════════╣
+║                                                                       ║
+║  1. Acesse https://console.firebase.google.com                        ║
+║  2. Clique em "Criar projeto" → dê um nome → confirme                 ║
+║  3. No menu lateral: Build → Realtime Database → Criar banco de dados ║
+║     • Escolha a região (us-central1 está OK)                          ║
+║     • Inicie em MODO DE TESTE (permite leitura/gravação pública)      ║
+║     • Para tornar permanente, defina as regras como:                  ║
+║         { "rules": { ".read": true, ".write": true } }                ║
+║                                                                       ║
+║  4. Configurações do projeto (ícone ⚙️) → "Seus apps" → clique em    ║
+║     "</>" (Web app) → Registre → copie o objeto firebaseConfig        ║
+║                                                                       ║
+║  5. Cole os valores no objeto FIREBASE_CONFIG no topo deste arquivo   ║
+║                                                                       ║
+║  6. Suba o index.html para o GitHub:                                  ║
+║     • Crie um repositório público                                     ║
+║     • Faça upload do index.html na raiz                               ║
+║     • Settings → Pages → Source: main / (root) → Save                ║
+║     • URL: https://SEU-USUARIO.github.io/NOME-DO-REPO                 ║
+║                                                                       ║
+╚═══════════════════════════════════════════════════════════════════════╝
+-->
 
-  function loadState() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || defaultState(); }
-    catch { return defaultState(); }
-  }
-  function defaultState() {
-    return {
-      people: [
-        { id: 1, name: 'Alan',    fixed: false,  active: true  },
-        { id: 2, name: 'Ivo',  fixed: false,  active: true  },
-        { id: 3, name: 'Jô',  fixed: false, active: true },
-        { id: 4, name: 'Matheus',  fixed: false, active: true },
-        { id: 5, name: 'Victor',  fixed: false, active: true },
-        { id: 6, name: 'Max',  fixed: false, active: true },
-        { id: 7, name: 'Tati',  fixed: false, active: true },
-        { id: 8, name: 'Lucas Espindola',  fixed: false, active: true },
-        { id: 9, name: 'Lucas Marcondes',  fixed: false, active: true },
-        { id: 10, name: 'Candil',  fixed: false, active: true },
-        { id: 11, name: 'Fernando',  fixed: false, active: true },
-      ],
-      history: [],
-      nextId: 5,
-    };
-  }
-  function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-
-  let state = loadState();
-
-  /* ─── DATE ─── */
-  function formatDate(d) {
-    return d.toLocaleDateString('pt-BR', { weekday:'short', day:'2-digit', month:'short' });
-  }
-  function todayStr() { return new Date().toLocaleDateString('pt-BR'); }
-
-  (function setDateBadge() {
-    const d = new Date();
-    const el = document.getElementById('dateBadge');
-    el.innerHTML = `
-      <div>${d.toLocaleDateString('pt-BR',{weekday:'long'})}</div>
-      <div style="font-size:1.1rem">${d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</div>
-    `;
-  })();
-
-  /* ─── RENDER PARTICIPANTS ─── */
-  function renderParticipants() {
-    const grid = document.getElementById('participantsGrid');
-    grid.innerHTML = '';
-    state.people.forEach(p => {
-      const chip = document.createElement('div');
-      chip.className = 'participant-chip' + (p.active ? ' active' : '');
-      chip.innerHTML = `
-        <div class="chip-check">✓</div>
-        <div class="chip-name">${escHtml(p.name)}</div>
-        <div class="chip-badge ${p.fixed ? 'fixed' : ''}">${p.fixed ? '⭐ Fixo' : 'Variável'}</div>
-        ${!p.fixed ? `<button class="chip-remove" title="Remover" onclick="removePerson(${p.id},event)">✕</button>` : ''}
-      `;
-      chip.addEventListener('click', () => togglePerson(p.id));
-      grid.appendChild(chip);
-    });
-    updateCounter();
-    calculate();
-  }
-
-  function updateCounter() {
-    const active = state.people.filter(p => p.active);
-    const fixed  = active.filter(p => p.fixed).length;
-    const vari   = active.filter(p => !p.fixed).length;
-    document.getElementById('counterPill').textContent = active.length;
-    document.getElementById('fixedCount').textContent  = fixed;
-    document.getElementById('varCount').textContent    = vari;
-  }
-
-  /* ─── ACTIONS ─── */
-  function togglePerson(id) {
-    const p = state.people.find(x => x.id === id);
-    if (p) p.active = !p.active;
-    saveState();
-    renderParticipants();
-  }
-
-  function addPerson() {
-    const inp = document.getElementById('newName');
-    const name = inp.value.trim();
-    if (!name) { inp.focus(); return; }
-    const fixed = document.getElementById('newFixed').checked;
-    state.people.push({ id: state.nextId++, name, fixed, active: true });
-    saveState();
-    inp.value = '';
-    document.getElementById('newFixed').checked = false;
-    renderParticipants();
-    inp.focus();
-  }
-  document.getElementById('newName').addEventListener('keydown', e => { if(e.key==='Enter') addPerson(); });
-
-  function removePerson(id, e) {
-    e.stopPropagation();
-    if (!confirm('Remover esta pessoa da lista?')) return;
-    state.people = state.people.filter(p => p.id !== id);
-    saveState();
-    renderParticipants();
-  }
-
-  function resetSemana() {
-    if (!confirm('Resetar confirmações para nova semana? (histórico será mantido)')) return;
-    state.people.forEach(p => { p.active = p.fixed; });
-    document.getElementById('totalValue').value = '';
-    saveState();
-    renderParticipants();
-    calculate();
-  }
-
-  /* ─── CALCULATE ─── */
-  function calculate() {
-    const total   = parseFloat(document.getElementById('totalValue').value) || 0;
-    const active  = state.people.filter(p => p.active);
-    const count   = active.length;
-    const rv      = document.getElementById('resultValue');
-    const rs      = document.getElementById('resultSub');
-
-    if (count === 0 || total === 0) {
-      rv.className = 'result-value result-empty';
-      rv.textContent = '—';
-      rs.textContent  = count === 0 ? 'Nenhum participante confirmado' : 'Informe o valor total';
-      return;
-    }
-
-    const pp   = Math.ceil((total / count) * 100) / 100;
-    rv.className = 'result-value';
-    rv.textContent = `R$ ${pp.toFixed(2).replace('.', ',')}`;
-    rs.textContent  = `Total R$ ${total.toFixed(2).replace('.', ',')} ÷ ${count} pessoa(s)`;
-  }
-
-  /* ─── SALVAR RATEIO ─── */
-  function salvarRateio() {
-    const total  = parseFloat(document.getElementById('totalValue').value) || 0;
-    const active = state.people.filter(p => p.active);
-    if (active.length === 0) { alert('Confirme pelo menos um participante!'); return; }
-    if (total <= 0)           { alert('Informe o valor total do pedido!'); return; }
-
-    const pp = Math.ceil((total / active.length) * 100) / 100;
-    state.history.unshift({
-      id:      Date.now(),
-      date:    todayStr(),
-      people:  active.map(p => p.name),
-      total,
-      perPerson: pp,
-    });
-    // manter só os últimos 12
-    if (state.history.length > 12) state.history.pop();
-    saveState();
-    renderHistory();
-    showToast('✅ Rateio salvo no histórico!');
-  }
-
-  /* ─── HISTORY ─── */
-  function renderHistory() {
-    const list = document.getElementById('historyList');
-    if (state.history.length === 0) {
-      list.innerHTML = '<div class="empty-state"><span class="big">📭</span>Nenhum rateio salvo ainda</div>';
-      return;
-    }
-    list.innerHTML = state.history.map(h => `
-      <div class="history-item">
-        <div class="hist-date">📅 ${h.date}</div>
-        <div class="hist-people" title="${escHtml(h.people.join(', '))}">
-          ${h.people.slice(0,3).map(escHtml).join(', ')}${h.people.length > 3 ? ` +${h.people.length-3}` : ''}
-        </div>
-        <div class="hist-valor">R$ ${h.perPerson.toFixed(2).replace('.',',')} <span style="color:#bba890;font-size:.8rem;font-weight:600">/ pessoa</span></div>
-        <button class="hist-delete" onclick="deleteHistory(${h.id})" title="Remover">🗑️</button>
-      </div>
-    `).join('');
-  }
-
-  function deleteHistory(id) {
-    state.history = state.history.filter(h => h.id !== id);
-    saveState();
-    renderHistory();
-  }
-
-  /* ─── TOAST ─── */
-  function showToast(msg) {
-    const t = document.createElement('div');
-    t.textContent = msg;
-    Object.assign(t.style, {
-      position:'fixed', bottom:'28px', left:'50%', transform:'translateX(-50%)',
-      background:'#2d6a4f', color:'#fff', padding:'12px 24px',
-      borderRadius:'14px', fontFamily:"'Nunito',sans-serif",
-      fontWeight:'700', fontSize:'1rem', boxShadow:'0 6px 24px rgba(0,0,0,.2)',
-      zIndex:9999, transition:'opacity .4s', whiteSpace:'nowrap'
-    });
-    document.body.appendChild(t);
-    setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 400); }, 2200);
-  }
-
-  /* ─── UTILS ─── */
-  function escHtml(s) {
-    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-
-  /* ─── INIT ─── */
-  renderParticipants();
-  renderHistory();
-</script>
 </body>
 </html>
